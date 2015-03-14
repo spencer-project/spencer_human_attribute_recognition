@@ -8,6 +8,6 @@ Real-time human attribute recognition algorithm for mobile robots in RGB-D devel
 
 If you use any of the code from this repository for your research, please cite our paper:
 
-> Timm Linder, Sven Wehner, Kai O. Arras
-> Real-Time Full-Body Human Gender Recognition in (RGB)-D Data
-> IEEE International Conference on Robotics and Automation (ICRA'15), Seattle, USA, 2015.
+> Timm Linder, Sven Wehner, Kai O. Arras    
+> *Real-Time Full-Body Human Gender Recognition in (RGB)-D Data*    
+> IEEE International Conference on Robotics and Automation (ICRA'15), Seattle, USA, 2015.    
