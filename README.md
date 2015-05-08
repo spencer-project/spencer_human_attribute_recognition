@@ -4,21 +4,19 @@
 
 This repository contains a ROS-based C++ / Python implementation of the classification approach described in the paper
 
-> "Real-Time Full-Body Human Gender Recognition in (RGB)-D Data"
-> by Timm Linder, Sven Wehner, Kai O. Arras
-> IEEE International Conference on Robotics and Automation (ICRA'15), Seattle, USA, 2015.
+> *Real-Time Full-Body Human Gender Recognition in (RGB)-D Data*  
+> by Timm Linder, Sven Wehner, Kai O. Arras   
+> IEEE International Conference on Robotics and Automation (ICRA'15), Seattle, USA, 2015.   
 
 Please cite our paper if you use this code in your research.
 
-The depth-based tessellation learning method described in this paper is an extension of a top-down classifier for people detection,
-originally described in
+The depth-based tessellation learning method described in this paper is an extension of a top-down classifier for people detection, originally described in
 
-> "Tracking People in 3D Using a Bottom-Up Top-Down Detector"
-> by Luciano Spinello, Matthias Luber, Kai O. Arras
-> IEEE International Conference on Robotics and Automation (ICRA'11), Shanghai, China, 2011.
+> *Tracking People in 3D Using a Bottom-Up Top-Down Detector*  
+> by Luciano Spinello, Matthias Luber, Kai O. Arras    
+> IEEE International Conference on Robotics and Automation (ICRA'11), Shanghai, China, 2011.    
 
-This complete re-implementation of the original code, among other optimizations, adds further tessellation scales and aspect ratios, filtering
-of low-quality training samples, and supports use of ROS/Rviz for visualization. It uses the Adaboost implementation from the OpenCV machine learning module.
+This complete re-implementation of the original code, among other optimizations, adds further tessellation scales and aspect ratios, filtering of low-quality training samples, and supports use of ROS/Rviz for visualization. It uses the Adaboost implementation from the OpenCV machine learning module.
 Point cloud files are loaded and pre-processed using the Point Cloud Library (PCL).
 
 
