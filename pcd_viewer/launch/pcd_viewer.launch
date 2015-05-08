@@ -1,0 +1,18 @@
+<launch>
+    <arg name="filename"/>
+    <arg name="depth_cloud_offset" default="1.0"/>
+    <arg name="rviz" default="true"/>
+
+    <group ns="pcd_viewer">
+
+        <node name="pcd_to_pointcloud" pkg="pcl_ros" type="pcd_to_pointcloud" args="$(arg filename) 3.0 _frame_id:=pcd_viewer_frame" required="true"/>
+
+        <node name="pcd_to_pointcloud2" pkg="pcl_ros" type="pcd_to_pointcloud" args="$(arg filename) 3.0 _frame_id:=pcd_viewer_frame_offset cloud_pcd:=cloud_offset"/>
+
+        <node name="tf" pkg="tf" type="static_transform_publisher" args="0 $(arg depth_cloud_offset) 0 0 0 0 pcd_viewer_frame pcd_viewer_frame_offset 100"/>
+
+        <node name="rviz" pkg="rviz" type="rviz" args="-d $(find pcd_viewer)/launch/pcd_viewer.rviz" required="true" if="$(arg rviz)"/>
+
+    </group>
+
+</launch>

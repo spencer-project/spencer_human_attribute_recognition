@@ -1,0 +1,4 @@
+fold000 - fold004       only pose subset, no randomization of order of frames within an instance (all frames of instance in order)
+fold005 - fold009       only pose subset, order of frames within instance randomized
+fold100 - fold104       sequences 1-3 (not 4 = interaction sequence), order of frames within instance randomized
+fold200 - fold209       entire dataset, sequences 1-4, order of frames within instance randomized

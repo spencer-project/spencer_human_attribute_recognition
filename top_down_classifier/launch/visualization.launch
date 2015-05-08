@@ -1,0 +1,5 @@
+<launch>
+    <node name="tf_view_frame" pkg="tf" type="static_transform_publisher" args="0 0 0 -1.1 0 1.15 extracted_cloud_frame view_frame 100"/>
+
+    <node name="rviz_top_down" pkg="rviz" type="rviz" args="-d $(find top_down_classifier)/launch/visualization.rviz" required="true"/>
+</launch>

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package>
+
+  <name>pcd_viewer</name>
+  <version>0.0.1</version>
+  <description>Simple PCD viewer based upon Rviz and pcl_ros</description>
+
+  <maintainer email="linder@informatik.uni-freiburg.de">Timm Linder</maintainer>
+
+  <license>BSD</license>
+  
+  <author email="linder@informatik.uni-freiburg.de">Timm Linder</author>
+  
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>pcl_ros</build_depend> 
+  
+  <run_depend>pcl_ros</run_depend>
+  <run_depend>rviz</run_depend>
+
+</package>
