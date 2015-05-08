@@ -1,6 +1,6 @@
-#### Tessellation-based 3D point cloud classifier for full-body human gender recognition ####
+### Tessellation-based 3D point cloud classifier for real-time, full-body human gender recognition ###
 
-##### Introduction ######
+#### Introduction #####
 
 This repository contains a ROS-based C++ / Python implementation of the classification approach described in the paper
 
@@ -21,6 +21,8 @@ This complete re-implementation of the original code, among other optimizations,
 of low-quality training samples, and supports use of ROS/Rviz for visualization. It uses the Adaboost implementation from the OpenCV machine learning module.
 Point cloud files are loaded and pre-processed using the Point Cloud Library (PCL).
 
+
+#### Installation and setup ####
 
 ##### System requirements #####
 
@@ -47,9 +49,11 @@ Once all of the above dependencies are installed, follow these steps:
 3. Build the workspace by running `catkin_make -DCMAKE_BUILD_TYPE=RelWithDebInfo`
 
 
+#### Dataset ####
+
 ##### Dataset format #####
 
-The experiments in our paper were conducted using the point cloud version of the SRL Human Attribute Dataset. To request access to this dataset for research purposes, [visit this page](http://srl.informatik.uni-freiburg.de/downloads).
+The experiments in our paper were conducted using the point cloud version of the SRL Human Attribute Dataset. To request access to this dataset for research purposes, [visit this page](http://srl.informatik.uni-freiburg.de/human_attributes_dataset).
 
 
 For our experiments, we only used the higher-resolution Kinect v2 data. The code in this ROS package assumes that the data is stored on hard disk in the following layout:
@@ -114,6 +118,8 @@ label (0 for negative class, 1 for positive class). Each file starts with two li
 Please note that the paths to the point clouds in the provided train/test splits inside the `data` folder are currently hard-coded. If you are storing the
 dataset in a different location, we recommend using a tool such as regexxer or sed to replace all the paths.
 
+
+#### Usage ####
 
 ##### Visualization of tessellations and person clouds #####
 
@@ -186,7 +192,7 @@ To classify a single point cloud (PCD file) using an existing classifier model, 
 The predicted class label (0: female, 1: male) is output to the console and also corresponds to the return value of the process (or -1 if an error occurred).
 
 
-##### Credits #####
+#### Credits ####
 
 Code written by Timm Linder, Social Robotics Laboratory, University of Freiburg.
 
