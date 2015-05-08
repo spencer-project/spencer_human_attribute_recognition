@@ -1,5 +1,8 @@
 ### Tessellation-based 3D point cloud classifier for real-time, full-body human gender recognition ###
 
+![Teaser Image 1](/../screenshots/screenshots/teaser-1.png?raw=true "Teaser Image 1") &nbsp;&nbsp;&nbsp;&nbsp; ![Teaser Image 2](/../screenshots/screenshots/teaser-2.png?raw=true "Teaser Image 2")
+
+
 #### Introduction #####
 
 This repository contains a ROS-based C++ / Python implementation of the classification approach described in the paper
