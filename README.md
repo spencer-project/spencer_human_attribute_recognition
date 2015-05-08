@@ -1,8 +1,7 @@
-Tessellation learning-based 3D point cloud classifier for full-body human gender recognition
-============================================================================================
+#### Tessellation-based 3D point cloud classifier for full-body human gender recognition ####
 
-Introduction
-------------
+##### Introduction ######
+
 This repository contains a ROS-based C++ / Python implementation of the classification approach described in the paper
 
 > "Real-Time Full-Body Human Gender Recognition in (RGB)-D Data"
@@ -23,8 +22,8 @@ of low-quality training samples, and supports use of ROS/Rviz for visualization.
 Point cloud files are loaded and pre-processed using the Point Cloud Library (PCL).
 
 
-System requirements
--------------------
+##### System requirements #####
+
 * Quad-core CPU recommended for efficient training/testing
 * 16 GB of RAM (for training, on the full dataset)
 * Around 300 GB of hard disk space for storing the entire dataset (>100 persons, 500-800 point cloud frames per person). SSD highly recommended.
@@ -39,8 +38,8 @@ Most of the required dependencies are installed automatically with ROS (`sudo ap
 To install Eigen3, use `sudo apt-get install libeigen3-dev`.
 
 
-How to build
-------------
+##### How to build #####
+
 Once all of the above dependencies are installed, follow these steps:
 
 1. Create a new ROS workspace as described in [this tutorial](http://wiki.ros.org/catkin/Tutorials/create_a_workspace)
@@ -48,8 +47,8 @@ Once all of the above dependencies are installed, follow these steps:
 3. Build the workspace by running `catkin_make -DCMAKE_BUILD_TYPE=RelWithDebInfo`
 
 
-Dataset format
---------------
+##### Dataset format #####
+
 The experiments in our paper were conducted using the point cloud version of the SRL Human Attribute Dataset. To request access to this dataset for research purposes, [visit this page](http://srl.informatik.uni-freiburg.de/downloads).
 
 
@@ -82,8 +81,8 @@ The associated `_pose.txt` files shall contain the following lines (example valu
 Position and sensor distance are used during training to filter out point clouds which are too close to the sensor's near clipping plane.
 
 
-Train/test split format
------------------------
+##### Train/test split format #####
+
 Since recording RGB-D point clouds of a large number of real persons under different orientations, distances and walking patterns is a very time-consuming task,
 it is not easily possible to cover thousands of persons in a single dataset. As the current dataset used in our research, the SRL Human Attribute Dataset, contains
 'only' slightly over 100 person (making it the largest such RGB-D person dataset that we are aware of), using k-fold cross-validation for training is not a good idea
@@ -116,8 +115,8 @@ Please note that the paths to the point clouds in the provided train/test splits
 dataset in a different location, we recommend using a tool such as regexxer or sed to replace all the paths.
 
 
-Visualization of tessellations and person clouds
-------------------------------------------------
+##### Visualization of tessellations and person clouds #####
+
 To visualize the person point clouds processed during training, and the resulting best tessellation, run
     roslaunch top_down_classifier visualization.launch
 
@@ -131,8 +130,8 @@ where `XXX` is the person number, `S` the sequence number and `F` the frame numb
 instance of Rviz, which just displays the point cloud in depth+color and depth-only.
 
 
-Training a classifier
----------------------
+##### Training a classifier #####
+
 Most code inside the `top_down_classifier` ROS package deals with learning a classifier, by selecting the best features, thresholds and tessellation volumes in which to compute these features.
 All the training (and validation testing) happens inside a ROS node called `train`.
 
@@ -160,8 +159,8 @@ the OpenCV machine learning APIs, along with some meta-data.
 For each train/test split, the `train` ROS node also saves a CSV file including prediction result and person pose/orientation (extracted from the dataset's `_pose.txt` files) inside the current working directory, which are afterwards useful for more detailed analysis.
 
 
-Optimizing a learned classifier
--------------------------------
+##### Optimizing a learned classifier #####
+
 The `top_down_classifier.yaml` file saved at the end of the training process by the `train` node still contains information about all the originally generated tessellation volumes and features. This usually leads to an over 120,000-dimensional feature vector for each sample. However, since Adaboost automatically learns the n best weak classifiers, most tessellation volumes and features calculated inside these volumes are actually never used by the resulting strong classifier. For this purpose, we can get rid of any unnecessary tessellation volumes and features by analyzing the weak classifiers in the `top_down_classifier.yaml` file. This is done by the script `optimize_classifier_model.py`:
 
     rosrun top_down_classifier optimize_classifier_model.py top_down_classifier.yaml
@@ -169,8 +168,8 @@ The `top_down_classifier.yaml` file saved at the end of the training process by 
 The output is a significantly smaller `top_down_classifier_optimized.yaml` model, which when used for classification (see the following step) usually leads to a feature vector of less than 1% of its original size. This significantly reduces the memory consumption and processing time of the classifier without any negative impact on classification performance.
 
 
-Testing a learned classifier
-----------------------------
+##### Testing a learned classifier #####
+
 To test an optimized or unoptimized classifier model (loaded from a YAML file) on a single train or test split, run:
 
     rosrun top_down_classifier test_classifier _model:=top_down_classifier_optimized.yaml _list_file:=`rospack find top_down_classifier`/data/foldXXX/val.txt
@@ -178,8 +177,8 @@ To test an optimized or unoptimized classifier model (loaded from a YAML file) o
 This ROS node will output the resulting accuracy to the console, and also publish the learned best tessellation contained in this YAML file as a `visualization_msgs/MarkerArray` that can be displayed in Rviz.
 
 
-Applying a learned classifier to a single point cloud
------------------------------------------------------
+##### Applying a learned classifier to a single point cloud #####
+
 To classify a single point cloud (PCD file) using an existing classifier model, run e.g.:
 
     rosrun top_down_classifier classify_single_cloud _filename:=~/srl_human_attribute_dataset/kinect2/clouds/person_XXX/person_XXX_S_F_cloud.pcd rviz:=false _model:=`rospack find top_down_classifier`/learned_models/top_down_classifier_fold207_optimized.yaml
@@ -187,16 +186,16 @@ To classify a single point cloud (PCD file) using an existing classifier model, 
 The predicted class label (0: female, 1: male) is output to the console and also corresponds to the return value of the process (or -1 if an error occurred).
 
 
-Credits
--------
+##### Credits #####
+
 Code written by Timm Linder, Social Robotics Laboratory, University of Freiburg.
 
-We would like to thank Dr. Luciano Spinello for kindly providing us parts of the original detector code from the paper *Tracking People in 3D Using a Bottom-Up Top-Down Detector* by *L. Spinello, M. Luber & K.O. Arras*.
+We would like to thank Dr. Luciano Spinello for kindly providing us parts of the original detector code from the paper *Tracking People in 3D Using a Bottom-Up Top-Down Detector* by *L. Spinello, M. Luber and K.O. Arras*.
 Parts of this code were used in the implementation of `tessellation_generator.cpp`.
 
 
-License
--------
+##### License #####
+
 This code is licensed under the 2-clause BSD license:
 
 Copyright (c) 2014-2015 Timm Linder, Social Robotics Laboratory, University of Freiburg, Germany.
