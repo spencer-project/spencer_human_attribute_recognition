@@ -34,7 +34,7 @@ Point cloud files are loaded and pre-processed using the Point Cloud Library (PC
 * OpenCV 2.3.1
 * Eigen3
 
-This package has only been tested on Ubuntu Precise 12.04 LTS with ROS Hydro. While we believe it should also work under Ubuntu Trusty 14.04 LTS with
+This package has only been tested on Ubuntu Precise 12.04 LTS (64-Bit) with ROS Hydro. While we believe it should also work under Ubuntu Trusty 14.04 LTS (64-Bit) with
 ROS Indigo without requiring major modifications, we cannot guarantee for this to work.
 
 Most of the required dependencies are installed automatically with ROS (`sudo apt-get install ros-hydro-desktop-full`).
