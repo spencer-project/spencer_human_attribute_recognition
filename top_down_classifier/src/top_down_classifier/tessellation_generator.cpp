@@ -13,6 +13,7 @@ TessellationGenerator::TessellationGenerator(const Volume& parentVolume, std::ve
     m_minVoxelSize = minVoxelSize;
     m_maxBorderWithoutVoxel = 0.25;
     m_parentVolumeSize = m_parentVolume.getSize();
+    m_zOffset = m_parentVolume.getMinCoordinates().z;
 
     m_voxelAspectRatios = voxelAspectRatios;
     m_voxelSizeIncrements = voxelSizeIncrements;
@@ -121,6 +122,10 @@ void TessellationGenerator::centerVolumes(std::vector<Volume>& volumes)
         volume.getMinCoordinates().y -= boundingVolumeSize.y / 2.0;
         volume.getMaxCoordinates().x -= boundingVolumeSize.x / 2.0;
         volume.getMaxCoordinates().y -= boundingVolumeSize.y / 2.0;
+
+        // Apply z offset
+        volume.getMinCoordinates().z += m_zOffset;
+        volume.getMaxCoordinates().z += m_zOffset;
     }
 }
 
@@ -171,8 +176,8 @@ void TessellationGenerator::generateTessellations(std::list<Tessellation>& tesse
                     
                     if(rw < m_maxBorderWithoutVoxel && rd < m_maxBorderWithoutVoxel && rh < m_maxBorderWithoutVoxel)
                     {
-                        ROS_INFO_STREAM("Got valid tessellation for voxel size: "  << voxelSize.x << ", " << voxelSize.y << ", " << voxelSize.z);
-                        ROS_INFO("rd, rw, rh: %.3g %.3g %.3g", rd, rw, rh);
+                        ROS_DEBUG_STREAM("Got valid tessellation for voxel size: "  << voxelSize.x << ", " << voxelSize.y << ", " << voxelSize.z);
+                        ROS_DEBUG("rd, rw, rh: %.3g %.3g %.3g", rd, rw, rh);
 
                         // assumes smaller dim < 1e-5
                         int hash_idx = voxelSize.y*10000  + voxelSize.x*100000 + voxelSize.z*1000000;
@@ -190,7 +195,7 @@ void TessellationGenerator::generateTessellations(std::list<Tessellation>& tesse
                         }                                
                     }
                     else {
-                        ROS_ERROR("Discarding tessellation, voxels of following size would not sufficiently cover parent volume: %.3g %.3g %.3g -- rd, rw, rh: %.3g %.3g %.3g", voxelSize.x, voxelSize.y, voxelSize.z, rd, rw, rh);
+                        ROS_DEBUG("Discarding tessellation, voxels of following size would not sufficiently cover parent volume: %.3g %.3g %.3g -- rd, rw, rh: %.3g %.3g %.3g", voxelSize.x, voxelSize.y, voxelSize.z, rd, rw, rh);
                     }
                 }
                 w++;

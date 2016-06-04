@@ -4,7 +4,6 @@
 #include "volume.h"
 #include "common.h"
 
-
 /// Represents a regular, axis-aligned face-to-face tessellation of a volume B
 class Tessellation {
 public:
@@ -26,6 +25,11 @@ public:
 
     const bool isOverlapping() const {
         return m_isOverlapping;
+    }
+
+    // Used in pre-training to delete volumes which are mostly empty / produce a lot of NaN feature values.
+    void deleteVolume(size_t index) {
+        m_volumes.erase(m_volumes.begin() + index);
     }
 
 

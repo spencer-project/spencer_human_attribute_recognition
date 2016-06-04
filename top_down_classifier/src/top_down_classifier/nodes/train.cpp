@@ -20,6 +20,9 @@
 #include "../volume_visualizer.h"
 #include "../tessellation_generator.h"
 #include "../features.h"
+#include "../cloud_preprocessing.h"
+
+#include "../3rd_party/cnpy/cnpy.h"
 
 using namespace std;
 
@@ -87,13 +90,13 @@ struct SplitComparatorByQuality {
 
 
 // Global variables
-std::list<Tessellation> g_tessellations;
 std::vector<string> g_featureNames;
-std::vector<Volume> g_overallVolumeLookup;
 ros::Publisher g_pointCloudPublisher;
 Volume g_parentVolume;
-size_t g_numPositiveSamples, g_numNegativeSamples, g_overallVolumeCount, g_minPoints;
+size_t g_numPositiveSamples, g_numNegativeSamples, g_minPoints;
 bool g_dumpFeatures;
+std::string g_category, g_numpyExportFolder;
+double g_scaleZto, g_cropZmin, g_cropZmax, g_maxNaNRatioPerVolume;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -103,7 +106,7 @@ double testClassifier(const CvBoost& adaboost, const cv::Mat& labels, const cv::
     size_t correctlyClassified = 0, totalClassified = 0;
 
     std::ofstream csvFile( csvFilename.c_str() );
-    csvFile << "classifier,mode,identifier,prediction,correct,position_x,position_y,velocity_x,velocity_y,orientation,phi,num_points" << std::endl;
+    csvFile << "classifier,mode,identifier,prediction,correct,position_x,position_y,velocity_x,velocity_y,orientation,phi,num_points,score" << std::endl;
 
     ROS_INFO("rows: labels=%d, features=%d, sampleIdx=%d", labels.rows, features.rows, sampleIdx.rows);
 
@@ -116,12 +119,25 @@ double testClassifier(const CvBoost& adaboost, const cv::Mat& labels, const cv::
             cv::Mat featureVector = features.row(sample);
             cv::Mat missingDataVector = missingDataMask.row(sample);
 
-            float predictedLabel = adaboost.predict(featureVector, missingDataVector);
-            bool correct = int(predictedLabel) == label;
-            if(correct) correctlyClassified++;
+            // Classifier prediction
+            float sumOfVotes = adaboost.predict(featureVector, missingDataVector, cv::Range::all(), false, true);
 
+            // Following block has been extracted from predict() in opencv/modules/ml/src/boost.cpp (tag 2.4.3),
+            // since there is no API to retrieve both class label and sum of votes simultaneously
+            // (without calling predict() twice, with different arguments)
+            const CvDTreeTrainData* trainData = adaboost.get_data();
+            const int* vtype = trainData->var_type->data.i;
+            const int* cmap = trainData->cat_map->data.i;
+            const int* cofs = trainData->cat_ofs->data.i;
+            int cls_idx = sumOfVotes >= 0;
+            int predictedLabel = cmap[cofs[vtype[trainData->var_count]] + cls_idx];
+
+            // Update statistics
+            bool correct = predictedLabel == label;
+            if(correct) correctlyClassified++;
             totalClassified++;
 
+            // Write into CSV file
             const std::string& cloudFilename = cloudFilenames[sample];
             std::string identifier = boost::filesystem::path(cloudFilename).stem().string();
             boost::replace_all(identifier, "_cloud", "");
@@ -131,7 +147,8 @@ double testClassifier(const CvBoost& adaboost, const cv::Mat& labels, const cv::
             const CloudInfo& cloudInfo = cloudInfos[sample];
             csvFile << ",";
             csvFile << cloudInfo.pose.x << "," << cloudInfo.pose.y << "," << cloudInfo.velocity.x << "," << cloudInfo.velocity.y << "," << cloudInfo.thetaDeg << ",";
-            csvFile << cloudInfo.phi << "," << cloudInfo.numPoints;
+            csvFile << cloudInfo.phi << "," << cloudInfo.numPoints << ",";
+            csvFile << sumOfVotes;
             csvFile << std::endl;
         }
     }
@@ -142,16 +159,46 @@ double testClassifier(const CvBoost& adaboost, const cv::Mat& labels, const cv::
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels, cv::Mat& features, cv::Mat& sampleIdx, cv::Mat& missingDataMask,
-    std::vector<FeatureVectorLookupEntry>& featureVectorLookup, std::vector<std::string>& cloudFilenames, std::vector<CloudInfo>& cloudInfos)
+bool loadCloudInfo(std::string& poseFilename, CloudInfo& cloudInfo)
+{
+    std::ifstream poseFile(poseFilename.c_str());
+    if(poseFile.fail()) {
+        return false;
+    }
+
+    std::string fieldName, NaNString;
+
+    float NaN = std::numeric_limits<float>::quiet_NaN();
+    cloudInfo.numPoints = 0;
+    cloudInfo.pose.x = NaN; cloudInfo.pose.y = NaN; cloudInfo.pose.z = 0;
+    cloudInfo.velocity.x = NaN; cloudInfo.velocity.y = NaN; cloudInfo.velocity.z = 0;
+    cloudInfo.thetaDeg = NaN; cloudInfo.sensorDistance = NaN;
+
+    // The fail() / clear() mechanism is needed because istream cannot handle NaN values
+    poseFile >> fieldName >> cloudInfo.pose.x;            if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "position_x");
+    poseFile >> fieldName >> cloudInfo.pose.y;            if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "position_y");
+    poseFile >> fieldName >> cloudInfo.velocity.x;        if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "velocity_x");
+    poseFile >> fieldName >> cloudInfo.velocity.y;        if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "velocity_y");
+    poseFile >> fieldName >> cloudInfo.thetaDeg;          if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "theta_deg");
+    poseFile >> fieldName >> cloudInfo.sensorDistance;    if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "sensor_distance");
+
+    cloudInfo.phi = atan2(cloudInfo.pose.y, cloudInfo.pose.x) * 180.0 / M_PI;
+    return true;
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void calculateFeaturesOnDataset(int fold, bool useValidationSet, std::list<Tessellation>& tessellations, cv::Mat& labels, cv::Mat& features, cv::Mat& sampleIdx, cv::Mat& missingDataMask,
+    std::vector<FeatureVectorLookupEntry>& featureVectorLookup, std::vector<Volume>& overallVolumeLookup, std::vector<std::string>& cloudFilenames, std::vector<CloudInfo>& cloudInfos)
 {
     PointCloud::Ptr personCloud(new PointCloud);
 
     // Count total number of volumes (voxels) over all tessellations
-    g_overallVolumeCount = 0;
-    foreach(Tessellation tessellation, g_tessellations) {
+    size_t overallVolumeCount = 0;
+    foreach(Tessellation tessellation, tessellations) {
         foreach(Volume volume, tessellation.getVolumes()) {
-            g_overallVolumeCount++;
+            overallVolumeCount++;
         }
     }
 
@@ -159,9 +206,9 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
     FeatureCalculator featureCalculator;
     g_featureNames = featureCalculator.getFeatureNames();
     const size_t featureCount = g_featureNames.size();
-    const size_t featureVectorSize = g_overallVolumeCount * featureCount;
+    const size_t featureVectorSize = overallVolumeCount * featureCount;
 
-    ROS_INFO_STREAM_ONCE("Total count of tessellation volumes (voxels):  " << g_overallVolumeCount);
+    ROS_INFO_STREAM_ONCE("Total count of tessellation volumes (voxels):  " << overallVolumeCount);
     ROS_INFO_STREAM_ONCE("Number of different features: " << featureCount);
     ROS_INFO_STREAM_ONCE("--> Each person cloud will have a feature vector of dimension " << featureVectorSize);
 
@@ -169,10 +216,10 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
     //
     // Load training data set and calculate features
     //
-    ROS_INFO_STREAM("Initializing " << (useValidationSet ? "validation" : "training") << " set for fold " << fold << "...");
+    ROS_INFO_STREAM("Initializing " << (useValidationSet ? "validation" : "training") << " set for fold " << fold << " of category '" << g_category << "'...");
 
     std::stringstream trainFilename;
-    trainFilename << ros::package::getPath(ROS_PACKAGE_NAME) << "/data/fold" << std::setw(3) << std::setfill('0') << fold << "/" << (useValidationSet ? "val" : "train") << ".txt";
+    trainFilename << ros::package::getPath(ROS_PACKAGE_NAME) << "/data/" << g_category << "/fold" << std::setw(3) << std::setfill('0') << fold << "/" << (useValidationSet ? "val" : "train") << ".txt";
     std::ifstream listFile(trainFilename.str().c_str());
 
     string cloudFilename;
@@ -200,6 +247,7 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
     labels.create(numClouds, 1, CV_32SC1);
     labels.setTo(cv::Scalar(99999));
 
+    ROS_INFO("Allocating memory for feature matrix, total: %zu MB", ((numClouds * featureVectorSize * 4) / (1024 * 1024)));
     features.create(numClouds, featureVectorSize, CV_32FC1);
     features.setTo(cv::Scalar(std::numeric_limits<double>::quiet_NaN()));
     
@@ -214,9 +262,9 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
     cloudFilenames.clear();
     cloudInfos.clear();
 
-    // Create map for looking up which column in the feature vector belongs to which tesellation + voxel + feature
-    g_overallVolumeLookup.clear();
-    g_overallVolumeLookup.reserve(g_overallVolumeCount);
+    // Create map for looking up which column in the feature vector belongs to which tessellation + voxel + feature
+    overallVolumeLookup.clear();
+    overallVolumeLookup.reserve(overallVolumeCount);
     featureVectorLookup.clear();
     featureVectorLookup.reserve(featureVectorSize);
     bool featureVectorLookupInitialized = false;
@@ -227,52 +275,30 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
     // Now start calculating features
     size_t numSkippedLowQualityClouds = 0;
     ros::WallRate rate(10);
-    int cloudCounter = 0;
+    int goodCloudCounter = 0, overallCloudCounter = 0;
     while (listFile >> cloudFilename >> label && ros::ok())
     {
         // Show progress
-        if(cloudCounter % (numClouds / 10) == 0) {
-            ROS_INFO("%d %% of feature computations done...", int(cloudCounter / (float)numClouds * 100.0f + 0.5f));
+        overallCloudCounter++;
+        if(overallCloudCounter % (numClouds / 10) == 0) {
+            ROS_INFO("%d %% of feature computations done...", int(overallCloudCounter / (float)numClouds * 100.0f + 0.5f));
         }
 
         // Load pose file
         std::string poseFilename = cloudFilename;
         boost::replace_all(poseFilename, "_cloud.pcd", "_pose.txt");
-        std::ifstream poseFile(poseFilename.c_str());
-        if(poseFile.fail()) {
+
+        CloudInfo cloudInfo;
+        if(!loadCloudInfo(poseFilename, cloudInfo)) {
             ROS_FATAL("Couldn't read pose file %s\n", poseFilename.c_str());
             continue;
         }
-
-        std::string fieldName, NaNString;
-
-        float NaN = std::numeric_limits<float>::quiet_NaN();
-        CloudInfo cloudInfo;
-        cloudInfo.pose.x = NaN; cloudInfo.pose.y = NaN; cloudInfo.pose.z = 0;
-        cloudInfo.velocity.x = NaN; cloudInfo.velocity.y = NaN; cloudInfo.velocity.z = 0;
-        cloudInfo.thetaDeg = NaN; cloudInfo.sensorDistance = NaN;
-
-        // The fail() / clear() mechanism is needed because istream cannot handle NaN values
-        poseFile >> fieldName >> cloudInfo.pose.x;            if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "position_x");
-        poseFile >> fieldName >> cloudInfo.pose.y;            if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "position_y");
-        poseFile >> fieldName >> cloudInfo.velocity.x;        if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "velocity_x");
-        poseFile >> fieldName >> cloudInfo.velocity.y;        if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "velocity_y");
-        poseFile >> fieldName >> cloudInfo.thetaDeg;          if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "theta_deg");
-        poseFile >> fieldName >> cloudInfo.sensorDistance;    if(poseFile.fail()) { poseFile.clear(); poseFile >> NaNString; }  ROS_ASSERT(fieldName == "sensor_distance");
-
-        cloudInfo.phi = atan2(cloudInfo.pose.y, cloudInfo.pose.x) * 180.0 / M_PI;
         
         // Load PCD file
         if(pcl::io::loadPCDFile<PointType>(cloudFilename, *personCloud) == -1)
         {
             ROS_FATAL("Couldn't read file %s\n", cloudFilename.c_str());
             continue;
-        }
-        else 
-        {
-            personCloud->header.frame_id = "extracted_cloud_frame";
-            personCloud->header.stamp = ros::Time::now().toNSec() / 1000;
-            g_pointCloudPublisher.publish(personCloud);
         }
 
         // Number of points is the last meta-data item we need to decide about goodness of cloud
@@ -292,17 +318,25 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
         cloudFilenames.push_back(cloudFilename);
 
         // Store label
-        labels.at<int>(cloudCounter) = label;
+        labels.at<int>(goodCloudCounter) = label;
         labelSet.insert(label);
         
         if(label > 0) g_numPositiveSamples++;
-        else g_numNegativeSamples++; 
+        else g_numNegativeSamples++;
+
+        // Scale point cloud in z direction (height)
+        scaleAndCropCloudToTargetSize(personCloud, g_scaleZto, g_cropZmin, g_cropZmax);
+
+        // Visualize cloud
+        personCloud->header.frame_id = "extracted_cloud_frame";
+        personCloud->header.stamp = ros::Time::now().toNSec() / 1000;
+        g_pointCloudPublisher.publish(personCloud);
 
         // Calculate features
         std::vector<double> fullFeatureVectorForCloud;
 
         size_t featureColumn = 0, t = 0, overallVolumeIndex = 0;
-        foreach(Tessellation tessellation, g_tessellations)  // for each tessellation...
+        foreach(Tessellation& tessellation, tessellations)  // for each tessellation...
         {
             #pragma omp parallel for schedule(dynamic) ordered
             for(size_t v = 0; v < tessellation.getVolumes().size(); v++)  // for each volume in that tessellation...
@@ -329,8 +363,8 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
                 {
                     for(size_t f = 0; f < volumeFeatureVector.size(); f++)  // for each feature...
                     {
-                        features.at<float>(cloudCounter, featureColumn) = volumeFeatureVector[f];
-                        missingDataMask.at<unsigned char>(cloudCounter, featureColumn) = !std::isfinite(volumeFeatureVector[f]) ? 1 : 0;
+                        features.at<float>(goodCloudCounter, featureColumn) = volumeFeatureVector[f];
+                        missingDataMask.at<unsigned char>(goodCloudCounter, featureColumn) = !std::isfinite(volumeFeatureVector[f]) ? 1 : 0;
 
                         if(!featureVectorLookupInitialized) {
                             FeatureVectorLookupEntry entry;
@@ -344,7 +378,7 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
                     }
 
                     if(!featureVectorLookupInitialized) {
-                        g_overallVolumeLookup.push_back(volume);
+                        overallVolumeLookup.push_back(volume);
                     }
 
                     overallVolumeIndex++;
@@ -355,30 +389,47 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
 
         featureVectorLookupInitialized = true;
         ROS_ASSERT(featureVectorLookup.size() == featureVectorSize);
-        ROS_ASSERT(g_overallVolumeLookup.size() == g_overallVolumeCount);
+        ROS_ASSERT(overallVolumeLookup.size() == overallVolumeCount);
 
         // Mark sample as active
-        sampleIdx.at<unsigned char>(cloudCounter) = 1;
+        sampleIdx.at<unsigned char>(goodCloudCounter) = 1;
 
         // Prepare for next sample
-        cloudCounter++;
+        goodCloudCounter++;
         ros::spinOnce();
         rate.sleep();
     }
 
 
-    // Dump feature values + labels into file for off-line analysis
+    // Optional: Dump feature values + labels into CSV file for off-line analysis
+    stringstream exportPrefix;
+    exportPrefix << g_category << "_fold" << fold << "_" << (useValidationSet ? "val" : "train") << "_";
+
     if(g_dumpFeatures) {
-        ROS_INFO("Dumping training data into file for optional off-line analysis...");
-        std::string prefix( std::string("top_down_") + std::string(useValidationSet ? "val" : "train") );
-        std::ofstream featureFile( (prefix + "_features.txt").c_str() );
-        std::ofstream missingFile( (prefix + "_missing.txt").c_str() );
-        std::ofstream labelFile( (prefix + "_labels.txt").c_str() );
+        ROS_INFO("Dumping features into file for optional off-line analysis...");
+        std::ofstream featureFile( (exportPrefix.str() + "features.txt").c_str() );
+        std::ofstream missingFile( (exportPrefix.str() + "missing.txt").c_str() );
+        std::ofstream labelFile( (exportPrefix.str() + "labels.txt").c_str() );
 
         featureFile << features;
         missingFile << missingDataMask;
         labelFile << labels;
     }
+
+    // Optional: Export features into numpy (.npy) file
+    if(!g_numpyExportFolder.empty()) {
+        ROS_INFO("Dumping features into numpy format for off-line analysis...");
+
+        const unsigned int featuresShape[] = { features.rows, features.cols };
+        cnpy::npy_save( g_numpyExportFolder + "/" + exportPrefix.str() + "features.npy", (float*)features.data, featuresShape, 2, "w" );
+
+        const unsigned int missingShape[] = { missingDataMask.rows, missingDataMask.cols };
+        cnpy::npy_save( g_numpyExportFolder + "/" + exportPrefix.str() + "missing.npy", (unsigned char*)missingDataMask.data, missingShape, 2, "w" );
+
+        const unsigned int labelsShape[] = { labels.rows, labels.cols };
+        cnpy::npy_save( g_numpyExportFolder + "/" + exportPrefix.str() + "labels.npy", (int*)labels.data, labelsShape, 2, "w" );
+    }
+
 
     std::stringstream ss;
     foreach(int label, labelSet) {
@@ -393,6 +444,119 @@ void calculateFeaturesOnDataset(int fold, bool useValidationSet, cv::Mat& labels
     }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void removeUnusedVolumes(std::list<Tessellation>& tessellations, int fold)
+{
+    PointCloud::Ptr personCloud(new PointCloud);
+
+    typedef std::vector<size_t> InvalidValuesPerVolume;
+    typedef std::map<Tessellation*, InvalidValuesPerVolume> TessMap;
+    TessMap tessMap;
+
+    //
+    // Load training data set and calculate features to see which of them lead to NaNs
+    //
+    ROS_INFO_STREAM("Finding unused tessellation volumes by iterating over training set...");
+    FeatureCalculator featureCalculator;
+    const size_t featureCount = featureCalculator.getFeatureCount();
+    
+    bool useValidationSet = false;
+    std::stringstream trainFilename;
+    trainFilename << ros::package::getPath(ROS_PACKAGE_NAME) << "/data/" << g_category << "/fold" << std::setw(3) << std::setfill('0') << fold << "/" << (useValidationSet ? "val" : "train") << ".txt";
+    std::ifstream listFile(trainFilename.str().c_str());
+
+    // Skip comments at beginning of file
+    std::string commentString;
+    const size_t numCommentLinesAtBeginning = 2;
+    for(size_t i = 0; i < numCommentLinesAtBeginning; i++) std::getline(listFile, commentString);
+    
+    // Process all training clouds in the fold
+    string cloudFilename; int label;
+    size_t numSuccessfulClouds = 0;
+    while (listFile >> cloudFilename >> label && ros::ok())
+    {
+        // Load PCD file
+        if(pcl::io::loadPCDFile<PointType>(cloudFilename, *personCloud) == -1)
+        {
+            ROS_WARN("Couldn't read file %s\n", cloudFilename.c_str());
+            continue;
+        }
+
+        // Scale point cloud in z direction (height)
+        scaleAndCropCloudToTargetSize(personCloud, g_scaleZto, g_cropZmin, g_cropZmax);
+
+        foreach(Tessellation& tessellation, tessellations)  // for each tessellation...
+        {
+            if(tessMap.find(&tessellation) == tessMap.end()) {
+                tessMap[&tessellation] = std::vector<size_t>(tessellation.getVolumes().size(), 0);
+            }
+            InvalidValuesPerVolume& invalidValuesPerVolume = tessMap[&tessellation];
+
+            #pragma omp parallel for schedule(dynamic) ordered
+            for(size_t v = 0; v < tessellation.getVolumes().size(); v++)  // for each volume in that tessellation...
+            {
+                // Get points inside volume
+                std::vector<int> indicesInsideVolume;
+                const Volume& volume = tessellation.getVolumes()[v];
+                volume.getPointsInsideVolume(*personCloud, PointCloud::Ptr(), &indicesInsideVolume);
+
+                // Calculate features (if sufficient points inside volume)
+                std::vector<double> volumeFeatureVector;
+                const size_t MIN_POINT_COUNT = g_minPoints;
+                if(indicesInsideVolume.size() >= MIN_POINT_COUNT) {
+                    featureCalculator.calculateFeatures(g_parentVolume, *personCloud, indicesInsideVolume,
+                        featureCalculator.maskAllFeaturesActive(), volumeFeatureVector); 
+                }
+                else volumeFeatureVector = std::vector<double>(featureCount, std::numeric_limits<double>::quiet_NaN());
+
+                // Copy feature values into right spot of sample's overall feature vector
+                ROS_ASSERT(volumeFeatureVector.size() == featureCount);
+                    
+                #pragma omp ordered
+                #pragma omp critical
+                {
+                    size_t numInvalidValues = 0;
+                    for(size_t f = 0; f < volumeFeatureVector.size(); f++)  // for each feature...
+                    {
+                        numInvalidValues += std::isfinite(volumeFeatureVector[f]) ? 0 : 1;
+                    }
+
+                    invalidValuesPerVolume[v] += numInvalidValues; // executed once for each training cloud
+                }
+            }
+        }
+
+        numSuccessfulClouds++;
+        ros::spinOnce();
+    }
+
+    // Iterate over all visited volumes and check which ones have a lot of NaNs
+    size_t numVolumesTotal = 0, numDeletedVolumes = 0;
+    
+    // For each tessellation (not necessarily ordered)...
+    foreach(TessMap::value_type it, tessMap) {
+        Tessellation* tessPtr = it.first;
+        size_t numDeletedInCurrentVolume = 0;
+
+        // ...and each volume in that tessellation (ordered by index)
+        for(size_t v = 0; v < it.second.size(); v++) {
+            size_t numNaNsInVolume = it.second[v];
+            float NaNpercentage = numNaNsInVolume / float(featureCount * numSuccessfulClouds);
+            if(NaNpercentage >= g_maxNaNRatioPerVolume) {
+                tessPtr->deleteVolume(v - numDeletedInCurrentVolume);
+                numDeletedVolumes++;
+                numDeletedInCurrentVolume++;
+            }
+            numVolumesTotal++;
+        }
+    }
+
+    ROS_INFO("%zu out of %zu volumes have been deleted because at least %.1f%% of the features computed inside these volumes yielded NaN or +/-Inf. This reduces the feature vector size by %.1f%%!",
+        numDeletedVolumes, numVolumesTotal, g_maxNaNRatioPerVolume*100.0f, numDeletedVolumes / float(numVolumesTotal) * 100.0f);
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////h///////
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -433,16 +597,24 @@ int main(int argc, char **argv)
     ros::NodeHandle nodeHandle("");
     ros::NodeHandle privateHandle("~");
 
-    bool showTessellations, showBestTessellation, interactive;
+    bool showTessellations, showBestTessellation, interactive, cacheFilteredTessellations;
     privateHandle.param<bool>("show_tessellations", showTessellations, true);
     privateHandle.param<bool>("show_best_tessellation", showBestTessellation, true);
     privateHandle.param<bool>("interactive", interactive, false);
     privateHandle.param<bool>("dump_features", g_dumpFeatures, false);
+    privateHandle.param<bool>("cache_filtered_tessellations", cacheFilteredTessellations, true); // if true, re-use filtered tessellation from first fold for all remaining runs. only used if max_nan_ratio_per_volume <= 1.0
+
+    privateHandle.param<double>("max_nan_ratio_per_volume", g_maxNaNRatioPerVolume, 1.01); // set to e.g. 0.8 to filter out all volumes with more than 60% NaNs on training set. off by default
 
     int initialFold, numFolds;
     privateHandle.param<int>("fold", initialFold, 0);
     privateHandle.param<int>("num_folds", numFolds, 1); // set to e.g. 5 if there are five splitX folders in "data" (cross-validation)
     
+    privateHandle.param<string>("npy_export_folder", g_numpyExportFolder, "");
+    privateHandle.param<string>("category", g_category, "");
+    ROS_ASSERT_MSG(!g_category.empty(), "_category must be specified (e.g. 'gender')");
+
+
     g_minPoints = 4; 
 
     omp_set_num_threads(5);
@@ -462,6 +634,14 @@ int main(int argc, char **argv)
         return (-1);
     }
 
+    // Scale point cloud
+    privateHandle.param<double>("scale_z_to", g_scaleZto, 0.0);
+    privateHandle.param<double>("crop_z_min", g_cropZmin, -std::numeric_limits<double>::infinity());
+    privateHandle.param<double>("crop_z_max", g_cropZmax, +std::numeric_limits<double>::infinity());
+    ROS_INFO("Input cloud scaling factor in z direction is %.3f", g_scaleZto > 0 ? g_scaleZto : 1.0f);
+    ROS_INFO("Cropping input clouds in z direction between %.3f and %.3f", g_cropZmin, g_cropZmax);
+    scaleAndCropCloudToTargetSize(personCloud, g_scaleZto, g_cropZmin, g_cropZmax);
+
     // Create point cloud publisher
     g_pointCloudPublisher = nodeHandle.advertise<sensor_msgs::PointCloud2>("cloud", 1, true);
     personCloud->header.frame_id = "extracted_cloud_frame";
@@ -472,7 +652,16 @@ int main(int argc, char **argv)
     // Generate bounding (parent) volume
     ROS_INFO_STREAM("Getting parent volume...");
 
-    pcl::PointXYZ minCoords(-0.3, -0.3, 0), maxCoords(0.3, 0.3, 1.8);
+    double parentVolumeWidth, parentVolumeHeight, parentVolumeZOffset;
+    privateHandle.param<double>("parent_volume_width", parentVolumeWidth, 0.6);
+    privateHandle.param<double>("parent_volume_height", parentVolumeHeight, 1.8);
+    privateHandle.param<double>("parent_volume_z_offset", parentVolumeZOffset, 0);
+    
+    const double parentVolumeHalfWidth = 0.5 * parentVolumeWidth;
+
+    pcl::PointXYZ minCoords(-parentVolumeHalfWidth, -parentVolumeHalfWidth, parentVolumeZOffset),
+                  maxCoords(+parentVolumeHalfWidth, +parentVolumeHalfWidth, parentVolumeZOffset + parentVolumeHeight);
+
     g_parentVolume = Volume(minCoords, maxCoords); // = Volume::fromCloudBBox(*personCloud);
 
     pcl::PointXYZ parentVolumeSize = g_parentVolume.getSize();
@@ -552,8 +741,9 @@ int main(int argc, char **argv)
     //
 
     ROS_INFO_STREAM("Beginning to generate tessellations (overlap " << (overlapEnabled ? "enabled" : "disabled") << ")..." );
-    tessellationGenerator.generateTessellations(g_tessellations);
-    ROS_INFO_STREAM("Finished generating tessellations! Got " << g_tessellations.size() << " in total!");
+    std::list<Tessellation> tessellations;
+    tessellationGenerator.generateTessellations(tessellations);
+    ROS_INFO_STREAM("Finished generating tessellations! Got " << tessellations.size() << " in total!");
 
 
     //
@@ -566,15 +756,15 @@ int main(int argc, char **argv)
     // TEST: Use only 1st tessellation in regular tessellation-only mode
     if(regularTessellationOnly) {
         std::list<Tessellation>::iterator it;
-        while(g_tessellations.size() > (overlapEnabled ? 2 : 1)) {
-            it = g_tessellations.begin();
-            std::advance(it, g_tessellations.size() - 1);
-            g_tessellations.erase(it);
+        while(tessellations.size() > (overlapEnabled ? 2 : 1)) {
+            it = tessellations.begin();
+            std::advance(it, tessellations.size() - 1);
+            tessellations.erase(it);
         }
     }
 
     size_t tessellationIndex = 0;
-    std::list<Tessellation>::const_iterator tessellationIt = g_tessellations.begin();
+    std::list<Tessellation>::const_iterator tessellationIt = tessellations.begin();
 
     while(showTessellations && ros::ok()) {
         personCloud->header.stamp = ros::Time::now().toNSec() / 1000;
@@ -590,7 +780,7 @@ int main(int argc, char **argv)
             getchar();
         }
 
-        if(!g_tessellations.empty()) {
+        if(!tessellations.empty()) {
             for(int i = 0; i < (overlapEnabled ? 2 : 1); i++) { // normal + overlapping tessellation
                 ROS_INFO_STREAM("Showing tessellation #" << tessellationIndex << (overlapEnabled && i & 1 ? " (overlapping)" : "" ) );
                 const std::vector<Volume>& volumes = tessellationIt->getVolumes();
@@ -598,7 +788,7 @@ int main(int argc, char **argv)
                    visualizer.visualize(volumes[volumeInTessellationIndex], 1 + volumeInTessellationIndex, tessellationIt->isOverlapping() ? "Tessellation (Overlapping)" : "Tessellation"); 
                 }
 
-                if(tessellationIndex < g_tessellations.size() - 1) {
+                if(tessellationIndex < tessellations.size() - 1) {
                     tessellationIt++;
                     tessellationIndex++;
                 }
@@ -620,14 +810,14 @@ int main(int argc, char **argv)
             getchar();
         }
 
-        if(tessellationIndex < g_tessellations.size() - 1) {
+        if(tessellationIndex < tessellations.size() - 1) {
             tessellationIndex++;
             tessellationIt++;
         }
         else {
             break;
             //tessellationIndex = 0;
-            //tessellationIt = g_tessellations.begin();
+            //tessellationIt = tessellations.begin();
         }
     }
 
@@ -642,14 +832,18 @@ int main(int argc, char **argv)
     // Perform training across all selected training/test set folds
     //
     std::vector<double> testAccuracyPerFold;
-    std::vector< cv::Ptr<CvBoost> > learnedClassifiers;
 
-    double bestTestAccuracySoFar = 0;
-    cv::Ptr<CvBoost> bestClassifierSoFar;
+    struct Result {
+        double testAccuracy;
+        cv::Ptr<CvBoost> classifier;
+        std::vector<FeatureVectorLookupEntry> featureVectorLookup;
+        std::vector<Volume> overallVolumeLookup;
+        std::list<Tessellation> filteredTessellations;
+    };
 
+    Result bestResultSoFar;
     std::stringstream ss;
-    std::vector<FeatureVectorLookupEntry> featureVectorLookup;
-
+    
     // Iterate over folds
     ros::WallTime startOfFold; ros::WallDuration durationOfPreviousFold;
 
@@ -658,9 +852,31 @@ int main(int argc, char **argv)
         ROS_INFO_STREAM("### STARTING TO PROCESS FOLD " << fold-initialFold+1 << " (=" << fold << ") " << " OF " << numFolds << "! ###");
 
         startOfFold = ros::WallTime::now();
+        Result currentResult;
 
         if(fold-initialFold > 0) {
             ROS_INFO_STREAM("Estimated time to completion of all folds: " << (durationOfPreviousFold.toSec() * (numFolds - (fold - initialFold))) / 60.0 << " minutes...");
+        }
+
+
+        //
+        // Pre-training: Remove tessellation volumes which are mostly empty in the training data
+        // This reduces the size of the resulting feature matrix.
+        //
+        currentResult.filteredTessellations = tessellations; // copy to preserve original tessellations for next fold
+        if(g_maxNaNRatioPerVolume <= 1.0) {
+            if(cacheFilteredTessellations && !bestResultSoFar.filteredTessellations.empty()) {
+                // Just copy filtered tessellations from previous fold. In practice, this should not have
+                // a big impact on classifier performance as long as all folds are of similar size and sufficiently randomized. 
+                currentResult.filteredTessellations = bestResultSoFar.filteredTessellations;
+                ROS_INFO("Re-using cached filtered tessellations from previous fold");
+            }
+            else {
+                // Find unnecessary volumes by calculating features over the entire training set and removing
+                // tessellation volumes which mostly contain NaNs.
+                removeUnusedVolumes(currentResult.filteredTessellations, fold);
+            }
+            if(!ros::ok()) break;
         }
 
         //
@@ -673,8 +889,11 @@ int main(int argc, char **argv)
         cv::Mat labels, features, sampleIdx, missingDataMask;
         std::vector<std::string> cloudFilenames;
         std::vector<CloudInfo> cloudInfos;
-        calculateFeaturesOnDataset(fold, false, labels, features, sampleIdx, missingDataMask, featureVectorLookup, cloudFilenames, cloudInfos);
+        calculateFeaturesOnDataset(fold, false, currentResult.filteredTessellations, labels, features, sampleIdx, missingDataMask,
+            currentResult.featureVectorLookup, currentResult.overallVolumeLookup, cloudFilenames, cloudInfos);
         
+        if(!ros::ok()) break;
+
 
         //
         // Train Adaboost classifier
@@ -693,7 +912,7 @@ int main(int argc, char **argv)
             }
             averageTestAccuracy /= (double) testAccuracyPerFold.size();
             ROS_INFO_STREAM("Test accuracies of previous fold(s): " << ss.str());
-            ROS_INFO("Average test accuracy after %d fold(s): %.2f%%, best: %.2f%%", fold-initialFold, averageTestAccuracy * 100.0, bestTestAccuracySoFar * 100.0);
+            ROS_INFO("Average test accuracy after %d fold(s): %.2f%%, best: %.2f%%", fold-initialFold, averageTestAccuracy * 100.0, bestResultSoFar.testAccuracy * 100.0);
         }
         ROS_INFO_STREAM("Now in fold " << fold-initialFold+1 << " of " << numFolds << "...");
 
@@ -711,12 +930,10 @@ int main(int argc, char **argv)
         ROS_INFO_STREAM("Training Adaboost classifier... this may take a while!");
         ROS_INFO_STREAM("Number of weak classifiers: " << params.weak_count << ", weight trim rate: " << params.weight_trim_rate);
 
-        cv::Ptr<CvBoost> adaboost(new CvBoost);
-        if(!adaboost->train(features, CV_ROW_SAMPLE, labels, cv::Mat(), sampleIdx, cv::Mat(), missingDataMask, params)) {
+        currentResult.classifier = cv::Ptr<CvBoost>(new CvBoost);
+        if(!currentResult.classifier->train(features, CV_ROW_SAMPLE, labels, cv::Mat(), sampleIdx, cv::Mat(), missingDataMask, params)) {
             ROS_ERROR("Training of Adaboost classifier failed for unknown reason!");
         }
-
-        learnedClassifiers.push_back(adaboost);
 
 
         //
@@ -726,30 +943,39 @@ int main(int argc, char **argv)
         ROS_INFO_STREAM("");
         ROS_INFO_STREAM("=== STARTING TESTING PHASE: TESTING CLASSIFIER ON TRAINING SET! ===");
         ss.str(""); ss << "top_down_train_results_fold" << fold << ".csv";
-        double trainAccuracy = testClassifier(*adaboost, labels, features, sampleIdx, missingDataMask, cloudFilenames, cloudInfos, ss.str());
+        double trainAccuracy = testClassifier(*currentResult.classifier, labels, features, sampleIdx, missingDataMask, cloudFilenames, cloudInfos, ss.str());
         ROS_INFO("Accuracy on training set: %.2f%%", trainAccuracy * 100.0);
 
         // Load test set
         ROS_INFO_STREAM("");
         ROS_INFO_STREAM("=== STARTING TESTING PHASE: TESTING CLASSIFIER ON TEST SET! ===");
         
-        calculateFeaturesOnDataset(fold, true, labels, features, sampleIdx, missingDataMask, featureVectorLookup, cloudFilenames, cloudInfos);  // true = use validation set
+        calculateFeaturesOnDataset(fold, true, currentResult.filteredTessellations, labels, features, sampleIdx, missingDataMask,
+            currentResult.featureVectorLookup, currentResult.overallVolumeLookup, cloudFilenames, cloudInfos);  // true = use validation set
 
+        if(!ros::ok()) break;
+        
         ss.str(""); ss << "top_down_test_results_fold" << fold << ".csv";
-        double testAccuracy = testClassifier(*adaboost, labels, features, sampleIdx, missingDataMask, cloudFilenames, cloudInfos, ss.str());
-        ROS_INFO("Accuracy on test set: %.2f%%", testAccuracy * 100.0);
+        currentResult.testAccuracy = testClassifier(*currentResult.classifier, labels, features, sampleIdx, missingDataMask, cloudFilenames, cloudInfos, ss.str());
+        ROS_INFO("Accuracy on test set: %.2f%%", currentResult.testAccuracy * 100.0);
 
-        if(testAccuracy > bestTestAccuracySoFar) {
-            bestTestAccuracySoFar = testAccuracy;
-            bestClassifierSoFar = adaboost;
+        if(currentResult.testAccuracy > bestResultSoFar.testAccuracy) {
+            bestResultSoFar = currentResult;
         }
-        testAccuracyPerFold.push_back(testAccuracy);
+        testAccuracyPerFold.push_back(currentResult.testAccuracy);
 
 
         // Update timing info
         durationOfPreviousFold = ros::WallTime::now() - startOfFold;
 
     } // end of current run (fold)
+
+    // Check if we got any test results (and thus a valid classifier) before continuing
+    if(testAccuracyPerFold.empty()) {
+        ROS_WARN("No results generated, exiting!");
+        ros::spinOnce();
+        return 1;
+    }
 
 
     //
@@ -766,7 +992,7 @@ int main(int argc, char **argv)
     }
     averageTestAccuracy /= (double) testAccuracyPerFold.size();
     ROS_INFO_STREAM("Test accuracies across all folds: " << ss.str());
-    ROS_INFO("Average test accuracy: %.2f%%, best: %.2f%%", averageTestAccuracy * 100.0, bestTestAccuracySoFar * 100.0);
+    ROS_INFO("Average test accuracy: %.2f%%, best: %.2f%%", averageTestAccuracy * 100.0, bestResultSoFar.testAccuracy * 100.0);
 
 
     //
@@ -779,6 +1005,8 @@ int main(int argc, char **argv)
     cv::FileStorage fileStorage("top_down_classifier.yaml", cv::FileStorage::WRITE);
 
     // Names of all features
+    fileStorage << "category" << g_category;
+
     fileStorage << "feature_names" << "[";
     for(size_t i = 0; i < g_featureNames.size(); i++) {
         fileStorage << g_featureNames[i];
@@ -789,10 +1017,13 @@ int main(int argc, char **argv)
     //fileStorage << "training_set_num_clouds" << (int) cv::sum(sampleIdx).val[0];
     //fileStorage << "training_set_num_positive_samples" << (int)g_numPositiveSamples;
     //fileStorage << "training_set_num_negative_samples" << (int)g_numNegativeSamples;
-    fileStorage << "num_tessellations" << (int)g_tessellations.size();
-    fileStorage << "num_overall_volumes" << (int)g_overallVolumeCount;
-    fileStorage << "feature_vector_length" << (int)featureVectorLookup.size();
+    fileStorage << "num_tessellations" << (int)bestResultSoFar.filteredTessellations.size();
+    fileStorage << "num_overall_volumes" << (int)bestResultSoFar.overallVolumeLookup.size();
+    fileStorage << "feature_vector_length" << (int)bestResultSoFar.featureVectorLookup.size();
     fileStorage << "min_points" << (int)g_minPoints;
+    fileStorage << "scale_z_to" << g_scaleZto;
+    fileStorage << "crop_z_min" << g_cropZmin;
+    fileStorage << "crop_z_max" << g_cropZmax;
 
     // The parent volume used for training
     fileStorage << "parent_volume";
@@ -800,7 +1031,7 @@ int main(int argc, char **argv)
 
     // The voxels of all tessellations
     fileStorage << "tessellation_volumes" << "[";
-    foreach(const Tessellation& tessellation, g_tessellations) {
+    foreach(const Tessellation& tessellation, bestResultSoFar.filteredTessellations) {
         foreach(const Volume& volume, tessellation.getVolumes()) {
             writeVolume(fileStorage, volume);
         }
@@ -809,8 +1040,8 @@ int main(int argc, char **argv)
 
     // Entries of the full feature vector per person cloud
     fileStorage << "feature_vector_entries" << "[";
-    for(size_t f = 0; f < featureVectorLookup.size(); f++) {
-        const FeatureVectorLookupEntry& entry = featureVectorLookup[f];
+    for(size_t f = 0; f < bestResultSoFar.featureVectorLookup.size(); f++) {
+        const FeatureVectorLookupEntry& entry = bestResultSoFar.featureVectorLookup[f];
         fileStorage << "{:" << "tessellationIndex" << (int)entry.tessellationIndex 
                             << "volumeInTessellationIndex" << (int)entry.volumeInTessellationIndex
                             << "overallVolumeIndex" << (int)entry.overallVolumeIndex
@@ -820,7 +1051,7 @@ int main(int argc, char **argv)
     fileStorage << "]";
 
     // Write the classifier itself
-    bestClassifierSoFar->write(*fileStorage, "classifier");
+    bestResultSoFar.classifier->write(*fileStorage, "classifier");
 
     // Close file
     fileStorage.release();
@@ -832,7 +1063,7 @@ int main(int argc, char **argv)
 
     // Extract weak classifiers from Adaboost classifier (NOTE: this will change in OpenCV 3)
     std::vector<CvBoostTree*> weakClassifiers;
-    CvSeq* sequenceOfWeakClassifiers = bestClassifierSoFar->get_weak_predictors();
+    CvSeq* sequenceOfWeakClassifiers = bestResultSoFar.classifier->get_weak_predictors();
     CvSeqReader reader; cvStartReadSeq(sequenceOfWeakClassifiers, &reader);
 
     for(size_t i = 0; i < sequenceOfWeakClassifiers->total; ++i)
@@ -873,7 +1104,7 @@ int main(int argc, char **argv)
     }
 
     std::vector<VolumeHistogramEntry> volumeHistogram;
-    for(size_t v = 0; v < g_overallVolumeCount; v++) {
+    for(size_t v = 0; v < bestResultSoFar.overallVolumeLookup.size(); v++) {
         VolumeHistogramEntry entry;
         entry.overallVolumeIndex = v;
         entry.numberOfTimesUsed = 0;
@@ -889,10 +1120,10 @@ int main(int argc, char **argv)
 
         int varIdx = split.var_idx; // this is the column in the feature vector
         float quality = split.quality;
-        size_t featureIndex = featureVectorLookup[varIdx].featureIndex;
-        size_t overallVolumeIndex = featureVectorLookup[varIdx].overallVolumeIndex;
-        size_t tessellationIndex = featureVectorLookup[varIdx].tessellationIndex;
-        size_t volumeInTessellationIndex = featureVectorLookup[varIdx].volumeInTessellationIndex;
+        size_t featureIndex = bestResultSoFar.featureVectorLookup[varIdx].featureIndex;
+        size_t overallVolumeIndex = bestResultSoFar.featureVectorLookup[varIdx].overallVolumeIndex;
+        size_t tessellationIndex = bestResultSoFar.featureVectorLookup[varIdx].tessellationIndex;
+        size_t volumeInTessellationIndex = bestResultSoFar.featureVectorLookup[varIdx].volumeInTessellationIndex;
 
         if(s < NUM_SPLITS_TO_SHOW) {
             ss << "- Feature vector column #" << std::setw(6) << std::setfill('0') << varIdx << ": " << g_featureNames[featureIndex] << " = " << quality << std::endl;
@@ -954,7 +1185,7 @@ int main(int argc, char **argv)
         if(!ros::ok() || !showBestTessellation) break;
         if(entry.numberOfTimesUsed < 1) break;
 
-        const Volume& volume = g_overallVolumeLookup[entry.overallVolumeIndex];        
+        const Volume& volume = bestResultSoFar.overallVolumeLookup[entry.overallVolumeIndex];        
 
         visualizer.visualize(volume, 1 + entry.overallVolumeIndex, tessellationIt->isOverlapping() ? "Tessellation (Overlapping)" : "Tessellation"); 
     

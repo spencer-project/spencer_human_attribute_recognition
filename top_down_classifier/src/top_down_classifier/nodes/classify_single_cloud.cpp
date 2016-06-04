@@ -23,6 +23,7 @@
 using namespace std;
 
 #include <boost/lexical_cast.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/foreach.hpp>
 #define foreach BOOST_FOREACH
@@ -59,7 +60,7 @@ class_label classifySingleCloud(const std::string& cloudFilename)
     // Classify cloud
     ros::WallTime startTimeWithoutIO = ros::WallTime::now();
     double weightedSum = std::numeric_limits<double>::quiet_NaN();
-    class_label label = g_classifier.classify(*personCloud, &weightedSum); // invoke classifier
+    class_label label = g_classifier.classify(personCloud, &weightedSum); // invoke classifier
     ros::WallDuration accumulatedDurationWithoutIO = ros::WallTime::now() - startTimeWithoutIO;
     
     double duration = accumulatedDurationWithoutIO.toSec();
@@ -115,8 +116,19 @@ int main(int argc, char **argv)
     if(!cloudFilename.empty()) {
         // Test classifier on provided list file (each line contains a cloud filename + label
         // separated by space or tabulator; first 2 lines are ignored)
-        class_label label = classifySingleCloud(cloudFilename); 
-        ROS_INFO_STREAM("Predicted class label is " << label << " (" << (label == 1 ? "MALE" : "FEMALE") << ")!");
+        class_label label = classifySingleCloud(cloudFilename);
+
+        std::stringstream ss;
+        ss << "Predicted class label is " << label;
+
+        if(boost::algorithm::contains(g_classifier.getCategory(), "gender")) {
+            ss << " (" << (label == 1 ? "MALE" : "FEMALE") << ")";
+        }
+        else {
+            ss << " (" << (label == 1 ? "POSITIVE" : "NEGATIVE") << ")";
+        }
+
+        ROS_INFO_STREAM(ss.str());
         return label;
     }
     else {

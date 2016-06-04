@@ -5,7 +5,6 @@ find_package(OpenCV REQUIRED)
 message(STATUS "Using OpenCV version ${OpenCV_VERSION} installed at: ${OpenCV_INCLUDE_DIRS}")
 message(STATUS "OpenCV supported compute capabilities are: ${OpenCV_COMPUTE_CAPABILITIES}")
 
-find_package(Eigen REQUIRED)
 find_package(PCL REQUIRED)
 find_package(orocos_kdl REQUIRED)
 find_package(Boost REQUIRED COMPONENTS )
@@ -19,7 +18,7 @@ if(OPENMP_FOUND)
 endif()
 
 find_package(catkin REQUIRED COMPONENTS
-  roscpp roslib pcl_conversions pcl_ros eigen_conversions tf_conversions visualization_msgs
+  roscpp roslib pcl_conversions pcl_ros eigen_conversions tf_conversions visualization_msgs cmake_modules
   # spencer_tracking_msgs spencer_vision_msgs
 
   # tf_conversions has a dependency on kdl, but doesn't pull it in correctly (might get linker error without this)
@@ -34,6 +33,10 @@ catkin_package()
 include_directories(include src ${catkin_INCLUDE_DIRS} ${Eigen_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
 
 
+add_library(cnpy
+    src/top_down_classifier/3rd_party/cnpy/cnpy.cpp)
+
+
 add_executable(train
     src/top_down_classifier/features.cpp
     src/top_down_classifier/volume.cpp
@@ -42,8 +45,7 @@ add_executable(train
     src/top_down_classifier/nodes/train.cpp)
 
 add_dependencies(train ${catkin_EXPORTED_TARGETS}) # for generated message headers etc.
-target_link_libraries(train ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
-
+target_link_libraries(train cnpy ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
 
 
 add_executable(test_features

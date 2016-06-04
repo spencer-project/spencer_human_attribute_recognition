@@ -25,7 +25,7 @@ private:
 
     void centerVolumes(std::vector<Volume>& volumes);
 
-    float m_minVoxelSize, m_maxBorderWithoutVoxel;
+    float m_minVoxelSize, m_maxBorderWithoutVoxel, m_zOffset;
     Volume m_parentVolume;
     pcl::PointXYZ m_parentVolumeSize;
     std::vector<pcl::PointXYZ> m_voxelAspectRatios;

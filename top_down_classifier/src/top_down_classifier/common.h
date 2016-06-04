@@ -7,7 +7,7 @@
 #include <pcl/common/common.h>
 
 
-typedef pcl::PointXYZ PointType;
+typedef pcl::PointXYZRGB PointType;
 typedef pcl::PointCloud<PointType> PointCloud;
 
 /// A class label (for a binary classifier, usually 0 or 1)

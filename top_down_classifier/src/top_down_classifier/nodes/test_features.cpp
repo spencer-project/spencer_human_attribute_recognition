@@ -26,7 +26,7 @@ void sampleSphere(PointCloud::Ptr& cloud, const Eigen::Vector3d& origin, double 
     for(int i = 0; i < pointCount; i++) {
         Eigen::Vector3d v(var_nor(), var_nor(), var_nor());
         Eigen::Vector3d pointOnSphere = radius / v.norm() * v;
-        cloud->points.push_back( pcl::PointXYZ(pointOnSphere(0), pointOnSphere(1), pointOnSphere(2)) );
+        cloud->points.push_back( PointType(pointOnSphere(0), pointOnSphere(1), pointOnSphere(2)) );
     }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -45,7 +45,7 @@ void samplePlane(PointCloud::Ptr& cloud, const Eigen::Vector3d& normalVector, do
         double x2 = (-distanceToOrigin - normalVector(0)*x0 - normalVector(1)*x1) / normalVector(2);
 
         Eigen::Vector3d pointOnPlane(x0, x1, x2);
-        cloud->points.push_back( pcl::PointXYZ(pointOnPlane(0), pointOnPlane(1), pointOnPlane(2)) );
+        cloud->points.push_back( PointType(pointOnPlane(0), pointOnPlane(1), pointOnPlane(2)) );
     }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

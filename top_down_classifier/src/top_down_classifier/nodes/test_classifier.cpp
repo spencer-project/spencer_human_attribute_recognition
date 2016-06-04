@@ -79,7 +79,7 @@ double testClassifier(const std::string& listFilename)
         // Classify cloud
         ros::WallTime startTimeWithoutIO = ros::WallTime::now();
         
-        class_label label = g_classifier.classify(*personCloud); // invoke classifier
+        class_label label = g_classifier.classify(personCloud); // invoke classifier
         if(label == groundtruthLabel) numCloudsCorrectlyClassified++;
 
         ros::WallTime endTimeWithoutIO = ros::WallTime::now();

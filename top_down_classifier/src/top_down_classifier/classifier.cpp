@@ -1,4 +1,5 @@
 #include "classifier.h"
+#include "cloud_preprocessing.h"
 
 #include <ros/ros.h>
 #include <algorithm>
@@ -47,6 +48,11 @@ void TopDownClassifier::init(const string& modelFilename)
     cv::FileStorage fileStorage(modelFilename, cv::FileStorage::READ);
     CvFileStorage* fileStorageInternal = *fileStorage; // for easier debugging, see fileStorageInternal.lineno value
     ROS_ASSERT_MSG(fileStorage.isOpened(), "Failed to open learned model %s", modelFilename.c_str());
+
+    // Read classifier category (attribute which it was trained on)
+    fileStorage["category"] >> m_category;
+    if(m_category.empty()) m_category = "gender";  // for old model files
+    ROS_INFO_STREAM("Model was trained on attribute " << m_category);
 
     // Check if this is an optimized classifier or not; if not, output warning
     fileStorage["optimized"] >> m_isOptimized;
@@ -114,7 +120,7 @@ void TopDownClassifier::init(const string& modelFilename)
         for(cv::FileNodeIterator it = activeFeaturesPerVolume.begin(); it != activeFeaturesPerVolume.end(); ++it)
         {
             // YAML file lists only active features per volume; assume all others to be inactive 
-            vector<bool> featureIsActive(m_numActiveFeatureTypes, false);
+            vector<bool> featureIsActive(m_numTotalFeatureTypes, false);
             cv::FileNode activeFeaturesInCurrentVolume = *it;
             for(cv::FileNodeIterator it = activeFeaturesInCurrentVolume.begin(); it != activeFeaturesInCurrentVolume.end(); ++it) {
                 int featureIndex = (int) *it;
@@ -125,9 +131,10 @@ void TopDownClassifier::init(const string& modelFilename)
         }
     }
     else {
-        // Assume all features are active 
+        // Assume all features are active
+        ROS_INFO("All features per volume are active!");
         for(size_t v = 0; v < m_volumes.size(); v++) {
-            m_activeFeaturesPerVolume.push_back(vector<bool>(m_numActiveFeatureTypes, true));
+            m_activeFeaturesPerVolume.push_back(vector<bool>(m_numTotalFeatureTypes, true));
         }
     }
 
@@ -178,6 +185,21 @@ void TopDownClassifier::init(const string& modelFilename)
     m_expectedFeatureVectorLength = (int) fileStorage["feature_vector_length"];
     ROS_ASSERT(numActiveVars == m_expectedFeatureVectorLength);
 
+    // Get pre-processing parameters
+    ROS_INFO("Reading cloud pre-processing parameters...");
+    
+    m_scaleZto = 0.0f;
+    if(!fileStorage["scale_z_to"].isNone()) m_scaleZto = (float) fileStorage["scale_z_to"];
+
+    m_cropZmin = -std::numeric_limits<float>::infinity();
+    if(!fileStorage["crop_z_min"].isNone()) m_cropZmin = (float) fileStorage["crop_z_min"];
+
+    m_cropZmax = +std::numeric_limits<float>::infinity();
+    if(!fileStorage["crop_z_max"].isNone()) m_cropZmax = (float) fileStorage["crop_z_max"];
+
+    ROS_INFO("Input cloud scaling factor in z direction is %.3f", m_scaleZto > 0 ? m_scaleZto : 1.0f);
+    ROS_INFO("Cropping input clouds in z direction between %.3f and %.3f", m_cropZmin, m_cropZmax);
+
     // Get Adaboost classifier
     ROS_INFO("Reading classifier...");
     cv::FileNode classifier = fileStorage["classifier"];
@@ -188,13 +210,19 @@ void TopDownClassifier::init(const string& modelFilename)
 }
 
 
-class_label TopDownClassifier::classify(const PointCloud& personCloud, double* weightedSum) const
+class_label TopDownClassifier::classify(PointCloud::Ptr personCloud, double* weightedSum) const
 {
     ROS_ASSERT_MSG(m_expectedFeatureVectorLength > 0, "Classifier has not been initialized (no weights file loaded)!");
 
-    cv::Mat featureVector, missingDataMask;
-    calculateFeatures(personCloud, featureVector, missingDataMask);
+    // Pre-process cloud
+    // IMPORTANT: This modifies the input cloud! Otherwise we'd have to copy the cloud, which would be slow
+    scaleAndCropCloudToTargetSize(personCloud, m_scaleZto, m_cropZmin, m_cropZmax);
 
+    // Compute features for this cloud
+    cv::Mat featureVector, missingDataMask;
+    calculateFeatures(*personCloud, featureVector, missingDataMask);
+
+    // Run classifier
     bool returnSum = weightedSum != NULL;
     float result = m_adaboost.predict(featureVector, missingDataMask, cv::Range::all(), false, returnSum);
 
@@ -238,6 +266,9 @@ void TopDownClassifier::calculateFeatures(const PointCloud& personCloud, cv::Mat
         const size_t expectedVolumeFeatureVectorLength = m_numActiveFeaturesPerVolume[v];
         vector<double> volumeFeatureVector;
         if(indicesInsideVolume.size() >= m_minPoints) {
+            ROS_ASSERT_MSG(m_activeFeaturesPerVolume[v].size() == m_featureCalculator.getFeatureCount(), "Active features mask for volume should have %zu element(s) but has %zu!",
+                m_featureCalculator.getFeatureCount(), m_activeFeaturesPerVolume[v].size());
+            
             m_featureCalculator.calculateFeatures(m_parentVolume, personCloud, indicesInsideVolume,
                 m_activeFeaturesPerVolume[v], volumeFeatureVector); 
         }
