@@ -1,6 +1,6 @@
-### Tessellation-based 3D point cloud classifier for real-time, full-body human gender recognition ###
+### Tessellation-based RGB-D point cloud classifier for real-time, full-body human attribute recognition ###
 
-![Teaser Image 1](/../screenshots/screenshots/iros15-teaser-1.png?raw=true "Teaser Image 1") &nbsp;&nbsp;&nbsp;&nbsp; ![Teaser Image 2](/../screenshots/screenshots/iros15-teaser-2.png?raw=true "Teaser Image 2")
+![Teaser Image 1](/../screenshots/screenshots/iros15-teaser-1.png?raw=true "Teaser Image 1") &nbsp;&nbsp;&nbsp;&nbsp; ![Teaser Image 2](/../screenshots/screenshots/teaser-2.png?raw=true "Teaser Image 2")
 
 
 #### Introduction #####
